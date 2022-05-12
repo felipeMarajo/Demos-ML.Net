@@ -1,0 +1,242 @@
+#!markdown
+
+Demo 2 - Executando todo o CRISP-DM
+
+#!csharp
+
+// Instalando Nugets Packages
+
+// ML.Net
+#r "nuget:Microsoft.ML"
+
+// FastTree
+#r "nuget:Microsoft.ML.FastTree"
+
+// DataFrames
+#r "nuget:Microsoft.Data.Analysis"
+
+// Plots
+#r "nuget:XPlot.Plotly,2.0.0"
+
+#!csharp
+
+using System;
+using System.Diagnostics;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.ML;
+using Microsoft.ML.Data;
+using Microsoft.Data.Analysis;
+using Microsoft.AspNetCore.Html;
+using Microsoft.ML.Trainers.FastTree;
+using System.IO;
+using System.IO.Compression;
+using System.Net.Http;
+using System.Globalization;
+using XPlot.Plotly;
+
+using static Microsoft.ML.TrainCatalogBase;
+using static Microsoft.ML.DataOperationsCatalog;
+
+#!csharp
+
+string housePath = "C:\\Users\\felipe_marajo\\Documents\\vs-code-workspace\\Datasets\\house\\train.csv";
+string modelPath = @"./houseModel2.zip";
+
+#!csharp
+
+// Download da base de dados
+if (!File.Exists(housePath))
+{
+    var contents = new HttpClient()        
+    .GetStringAsync("https://raw.githubusercontent.com/ageron/handson-ml2/master/datasets/housing/housing.csv").Result;   
+    File.WriteAllText(housePath, contents);
+}
+
+#!markdown
+
+Exploração dos Dados
+
+#!csharp
+
+// Carregando CSV
+var df = DataFrame.LoadCsv(housePath);
+
+#!csharp
+
+// Retornando 5 primeira linhas
+var head = df.Head(5);
+head
+
+#!csharp
+
+// Máximos, mínimos e médias
+var description = df.Description();
+description
+
+#!csharp
+
+// total_bedrooms possui registros nulos
+var info = df.Info();
+info
+
+#!csharp
+
+// Deletando registros nulos (Linhas)
+df.DropNulls();
+
+#!markdown
+
+Modelagem
+
+#!csharp
+
+// Dados de entrada
+public class ModelInput
+{
+    [LoadColumn(0)]
+    public float Longitude {get; set;}
+    [LoadColumn(1)]
+    public float Latitude {get; set;}
+    [LoadColumn(2)]
+    public float Housing_median_age {get; set;}
+    [LoadColumn(3)]
+    public float Total_rooms {get; set;}
+    [LoadColumn(4)]
+    public float Total_bedrooms {get; set;}
+    [LoadColumn(5)]
+    public float Population {get; set;}
+    [LoadColumn(6)]
+    public float Households {get; set;}
+    [LoadColumn (7)]
+    public float Median_income {get; set;}
+    [ColumnName("Label"), LoadColumn(8)]
+    public float Median_house_value {get; set;}
+    [LoadColumn(9)]
+    public string Ocean_proximity {get; set;}
+}
+
+// Dado de saída
+public class ModelOutput
+{
+    [ColumnName("Score")]
+    public float Score {get; set;}
+}
+
+#!csharp
+
+// Criando contexto
+MLContext mlContext = new MLContext(seed: 1001);
+
+#!csharp
+
+// Separando dados de treino e teste
+private static IDataView trainingDataView;
+private static IDataView testingDataView;
+
+
+// Carregando arquivo
+IDataView fullData = mlContext.Data
+                .LoadFromTextFile<ModelInput>(path: housePath, 
+                                            hasHeader: true,                                                                          
+                                            separatorChar: ',', 
+                                            allowQuoting: true, 
+                                            allowSparse: false);
+
+// Separando em traino e teste [80%, 20%]
+DataOperationsCatalog.TrainTestData trainTestData = mlContext.Data.TrainTestSplit(fullData, testFraction: 0.2);
+trainingDataView = trainTestData.TrainSet;
+testingDataView = trainTestData.TestSet;
+
+#!csharp
+
+// Aplicação de One Hot Encoder
+// Classes: Palio Uno Marea
+
+// OneHot: Palio 1 0 0
+//           Uno 0 1 0
+//         Marea 0 0 1
+
+var dataProcessPipeline = mlContext.Transforms.Categorical.OneHotEncoding(new[]{ 
+    new InputOutputColumnPair("Ocean_proximity", "Ocean_proximity") })                                                  
+        .Append(mlContext.Transforms.Concatenate("Features", new[] 
+                                                { "Ocean_proximity","Longitude", "Latitude", "Housing_median_age",                                                                                        
+                                                "Total_rooms", "Total_bedrooms", "Population",                                                                                                     
+                                                "Households", "Median_income" })                                                
+        .AppendCacheCheckpoint(mlContext)); // Trabalhando em memória. Melhorar velocidade
+
+// Utilizando Regressão
+var trainer = mlContext.Regression.Trainers.Sdca(labelColumnName: "Label", featureColumnName: "Features");
+// Adicionando algoritmo ao pipeline
+var trainingPipeline = dataProcessPipeline.Append(trainer);
+
+#!csharp
+
+var model = trainingPipeline.Fit(trainingDataView);
+Console.WriteLine("Fim do treinamento");
+
+#!csharp
+
+public void printMetrics(RegressionMetrics metrics){
+    Console.WriteLine($"Loss Function: {metrics.LossFunction}");
+    Console.WriteLine($"Absolute Loss: {metrics.MeanAbsoluteError}");
+    Console.WriteLine($"Squared Loss:  {metrics.RootMeanSquaredError}");
+}
+
+#!csharp
+
+// Avaliação do Modelo com os dados de teste
+IDataView predictions = model.Transform(testingDataView);
+
+var metrics = mlContext.Regression.Evaluate(data:predictions, 
+                                            labelColumnName:"Label", 
+                                            scoreColumnName: "Score");
+
+printMetrics(metrics);
+
+#!markdown
+
+Salvando o modelo
+
+#!csharp
+
+mlContext.Model.Save(model, trainingDataView.Schema, modelPath);
+Console.WriteLine("Modelo salvo em {0}", modelPath);
+
+#!markdown
+
+Carregar Modelo Salvo
+
+#!csharp
+
+ITransformer model = mlContext.Model.Load(modelPath, out var modelInputSchema);
+var predEngine = mlContext.Model.CreatePredictionEngine<ModelInput, ModelOutput>(model);
+
+#!markdown
+
+Gerar novo Registro
+
+#!csharp
+
+// Criando novo dado com base nos dados existentes
+ModelInput sampleData = new ModelInput()
+{
+    Longitude = -122.23F,
+    Latitude = 37.88F,
+    Housing_median_age = 41F,
+    Total_rooms = 88F,
+    Total_bedrooms = 129F,
+    Population = 322F,
+    Households = 126F,
+    Median_income = 8.3252F,
+    Ocean_proximity = @"NEAR BAY",
+};
+
+#!markdown
+
+Nova Predição
+
+#!csharp
+
+var resultprediction = predEngine.Predict(sampleData);
+Console.WriteLine ($"O Preço do novo imóvel é: {resultprediction.Score} R$");
